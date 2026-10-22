@@ -1,0 +1,22 @@
+# 실측 설정값 — SA/프로젝트 정보가 들어가므로 절대 커밋하지 않습니다
+config/env.sh
+
+# 테스트 증적 (로컬 산출물)
+evidence/*
+!evidence/.gitkeep
+
+# 업무 SQL — 운영 쿼리이므로 기본 제외. 필요 시 팀 정책에 따라 조정
+sql/*.sql
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# 임시
+*.tmp
+*.bak
+*.swp
+.DS_Store

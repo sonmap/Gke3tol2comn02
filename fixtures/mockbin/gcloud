@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# MOCK gcloud — MODE=mock 전용. 실제 GCP 에 접속하지 않습니다.
+#
+# 실패 주입: MOCK_GCLOUD_FAIL=perm|notfound|network
+set -uo pipefail
+
+args="$*"
+fail() { echo "$1" >&2; exit 1; }
+
+case "${MOCK_GCLOUD_FAIL:-}" in
+  perm)     fail 'ERROR: (gcloud.container.clusters.describe) PERMISSION_DENIED: Required "container.clusters.get" permission' ;;
+  notfound) fail 'ERROR: (gcloud.artifacts.repositories.list) NOT_FOUND: Repository not found' ;;
+  network)  fail 'ERROR: (gcloud) Unable to connect: i/o timeout' ;;
+esac
+
+# --- clusters describe ---
+if [[ "$args" == *"clusters describe"* ]]; then
+  cat <<'YAML'
+autopilot:
+  enabled: true
+name: gkea-prod-l2comn-batch
+networkConfig:
+  network: edp-hub-shared-prod-01
+privateClusterConfig:
+  enablePrivateNodes: true
+  privateEndpoint: 10.136.0.2
+status: RUNNING
+nodeConfig:
+  serviceAccount: mock-node-sa@gcp-prod-dlk-l2comn.iam.gserviceaccount.com
+YAML
+  exit 0
+fi
+
+# --- get-credentials ---
+if [[ "$args" == *"get-credentials"* ]]; then
+  : "${KUBECONFIG:=$HOME/.kube/mock}"
+  mkdir -p "$(dirname "$KUBECONFIG")"
+  cat > "$KUBECONFIG" <<'KUBE'
+apiVersion: v1
+kind: Config
+clusters:
+- cluster: {server: https://10.136.0.2}
+  name: mock
+contexts:
+- context: {cluster: mock, user: mock}
+  name: mock
+current-context: mock
+users:
+- name: mock
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      command: gke-gcloud-auth-plugin
+      installHint: Install gke-gcloud-auth-plugin
+      provideClusterInfo: true
+KUBE
+  chmod 600 "$KUBECONFIG"
+  echo "Fetching cluster endpoint and auth data." >&2
+  echo "kubeconfig entry generated for mock." >&2
+  exit 0
+fi
+
+# --- artifacts repositories list ---
+# 설정된 AR_REPO 를 그대로 돌려줘 하네스의 "저장소 존재 확인" 분기를 통과시킵니다.
+# MOCK_AR_REPO_MISMATCH=1 이면 다른 이름을 돌려줘 실패 분기를 검증할 수 있습니다.
+if [[ "$args" == *"repositories list"* ]]; then
+  repo="${AR_REPO:-mock-repo}"
+  [ -n "${MOCK_AR_REPO_MISMATCH:-}" ] && repo="some-other-repo"
+  if [[ "$args" == *"value("* ]]; then
+    echo "$repo"
+  else
+    echo "NAME         FORMAT  LOCATION"
+    echo "$repo  DOCKER  ${AR_LOCATION:-asia-northeast3}"
+  fi
+  exit 0
+fi
+
+# --- artifacts docker images list ---
+if [[ "$args" == *"docker images list"* ]]; then
+  base="${AR_LOCATION:-asia-northeast3}-docker.pkg.dev/${AR_PROJECT:-mock-project}/${AR_REPO:-mock-repo}/zc24"
+  dg="sha256:0000000000000000000000000000000000000000000000000000000000000001"
+  printf '%s %s %s\n' "$base" "$dg" "${ZC24_TAG:-2.3-zc24-zc24-003-3}"
+  exit 0
+fi
+
+# --- artifacts docker images describe ---
+if [[ "$args" == *"docker images describe"* ]]; then
+  cat <<YAML
+image_summary:
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000001
+  fully_qualified_digest: mock@sha256:0000000000000000000000000000000000000000000000000000000000000001
+  registry: ${AR_LOCATION:-asia-northeast3}-docker.pkg.dev
+  repository: ${AR_REPO:-mock-repo}
+  architecture: amd64
+YAML
+  exit 0
+fi
+
+# --- auth list ---
+if [[ "$args" == *"auth list"* ]]; then
+  acct="mock-vm-sa@${GKE_PROJECT:-mock-project}.iam.gserviceaccount.com"
+  if [[ "$args" == *"value("* ]]; then
+    echo "$acct"
+  else
+    echo "       Credentialed Accounts"
+    echo "ACTIVE  ACCOUNT"
+    echo "*       $acct"
+  fi
+  exit 0
+fi
+
+# --- config ---
+if [[ "$args" == *"config get-value project"* ]]; then
+  echo "${GKE_PROJECT:-mock-project}"; exit 0
+fi
+
+echo "mock gcloud: $args"
+exit 0

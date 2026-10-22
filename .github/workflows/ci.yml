@@ -1,0 +1,68 @@
+name: preflight-harness
+
+# 하네스 자체를 검증합니다. GCP 에는 접속하지 않습니다.
+# 운영 환경 검증(dryrun/live)은 운영 VM 에서 수동으로 수행합니다.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 도구 설치
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck jq
+          python3 -m pip install --quiet pytest
+
+      - name: 셸 구문 검사
+        run: make lint
+
+      - name: Python 단위 테스트
+        run: make python-test
+
+      - name: 하네스 검증 (mock)
+        run: make test-mock
+
+      - name: 실패 주입 검증
+        run: make test-negative
+
+      - name: 매니페스트 렌더링 확인
+        run: |
+          out=$(bin/render.sh /tmp/rendered)
+          echo "렌더링 위치: $out"
+          for f in nfs-smoke.yaml bq-smoke.yaml probe-inline-nfs.yaml; do
+            test -s "/tmp/rendered/$f" || { echo "누락: $f"; exit 1; }
+          done
+          # YAML 파싱 가능 여부
+          python3 - <<'PY'
+          import glob, sys
+          try:
+              import yaml
+          except ImportError:
+              sys.exit(0)
+          for p in glob.glob('/tmp/rendered/*.yaml'):
+              list(yaml.safe_load_all(open(p)))
+              print('ok', p)
+          PY
+
+      - name: 증적 집계
+        if: always()
+        run: bin/report.sh --all || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence
+          path: evidence/*.jsonl
+          if-no-files-found: ignore

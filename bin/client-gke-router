@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Wave 전환 라우터 (선택 배치)
+#
+# 실행계획서 10.3 의 모순에 대한 구조적 해법입니다.
+# 심볼릭 링크를 한 번 바꾸면 공통 경로를 쓰는 새 호출이 전부 신규 클러스터로
+# 향하므로 Wave 구분이 무의미해집니다. 계획서도 이를 인정하고 "운영 절차 합의"로
+# 남겨두었지만, 23시 집중 구간에서 사람 손에 의존한 순차 재개는 지키기 어렵습니다.
+#
+# 배치 방법:
+#   cp bin/client-gke-router /ssw/dlk/client-gke-router
+#   chmod +x /ssw/dlk/client-gke-router
+#   ln -s /ssw/dlk/client-gke-router /ssw/dlk/.next && mv -Tf /ssw/dlk/.next /ssw/dlk/client_gke
+#
+# Wave 확대 = 허용 목록에 한 줄 추가. 원복 = 한 줄 삭제.
+#
+# 주의: 라우터 자체가 단일 장애점입니다. 배치 전에 bash -n 과 양쪽 분기를
+#       반드시 검증하십시오 (tests/t10_rollback_rehearsal.sh 가 수행합니다).
+
+set -uo pipefail
+
+ALLOW_LIST="${ALLOW_LIST:-/ssw/dlk/autopilot_allow.txt}"
+CLIENT_NEW="${CLIENT_NEW:-/ssw/dlk/client-gke-auto}"
+CLIENT_OLD="${CLIENT_OLD:-/ssw/dlk/client_gke.pre-autopilot}"
+ROUTER_LOG="${ROUTER_LOG:-/var/log/client-gke-router.log}"
+
+# --- program-id 추출 --------------------------------------------------------
+PID=""
+prev=""
+for arg in "$@"; do
+  case "$prev" in --program-id|-p) PID="$arg"; break ;; esac
+  case "$arg" in --program-id=*) PID="${arg#*=}"; break ;; esac
+  prev="$arg"
+done
+
+# --- 라우팅 판정 ------------------------------------------------------------
+# 허용 목록에 있으면 신규, 없으면 기존. 목록 파일이 없으면 전부 기존으로
+# 보냅니다 (안전한 기본값 — 파일 유실이 대량 전환으로 이어지지 않도록).
+TARGET="$CLIENT_OLD"
+ROUTE="legacy"
+if [ -n "$PID" ] && [ -r "$ALLOW_LIST" ]; then
+  if grep -qxF "$PID" "$ALLOW_LIST" 2>/dev/null; then
+    TARGET="$CLIENT_NEW"
+    ROUTE="autopilot"
+  fi
+fi
+
+# --- 감사 로그 --------------------------------------------------------------
+# 어떤 과제가 언제 어디로 갔는지 남깁니다. 이중 실행 추적의 근거가 됩니다.
+if [ -w "$(dirname "$ROUTER_LOG")" ] 2>/dev/null; then
+  printf '%s pid=%s route=%s target=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${PID:-UNKNOWN}" "$ROUTE" "$TARGET" \
+    >> "$ROUTER_LOG" 2>/dev/null || true
+fi
+
+if [ ! -x "$TARGET" ]; then
+  echo "client-gke-router: 실행기를 찾을 수 없습니다: $TARGET" >&2
+  exit 127
+fi
+
+exec "$TARGET" "$@"

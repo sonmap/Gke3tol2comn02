@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# MOCK kubectl — MODE=mock 전용. 실제 클러스터에 접속하지 않습니다.
+#
+# 실패 주입:
+#   MOCK_KUBECTL_FAIL=admission|perm|notfound|network
+#   MOCK_POD_PHASE=Succeeded|Failed|Pending
+#   MOCK_POD_EXIT=0|1|137
+set -uo pipefail
+
+args="$*"
+
+fail() { echo "$1" >&2; exit "${2:-1}"; }
+
+case "${MOCK_KUBECTL_FAIL:-}" in
+  perm)     fail 'Error from server (Forbidden): pods is forbidden: User cannot create resource "pods"' ;;
+  notfound) fail 'Error from server (NotFound): namespaces "l2comm-batch" not found' ;;
+  network)  fail 'Unable to connect to the server: dial tcp 10.0.0.1:443: i/o timeout' ;;
+  admission)
+    if [[ "$args" == *"dry-run"* || "$args" == *"apply"* ]]; then
+      fail 'Error from server (Forbidden): admission webhook "warden-validating.common-webhooks.networking.gke.io" denied the request: GKE Warden rejected the request: the volume type "nfs" is not allowed in Autopilot'
+    fi ;;
+esac
+
+# --- cluster-info ---
+if [[ "$args" == *"cluster-info"* ]]; then
+  echo "Kubernetes control plane is running at https://10.136.0.2"
+  exit 0
+fi
+
+# --- auth can-i ---
+if [[ "$args" == *"auth can-i"* ]]; then
+  echo yes; exit 0
+fi
+
+# --- get ns ---
+if [[ "$args" == *"get ns"* || "$args" == *"get namespace"* ]]; then
+  echo "NAME            STATUS   AGE"
+  echo "l2comm-batch    Active   30d"
+  exit 0
+fi
+
+# --- version ---
+if [[ "$args" == *"version"* ]]; then
+  echo 'Client Version: v1.31.0'
+  echo 'Server Version: v1.31.1-gke.1000'
+  exit 0
+fi
+
+# --- apply (dry-run 포함) ---
+if [[ "$args" == *"apply"* ]]; then
+  if [[ "$args" == *"dry-run=server"* ]]; then
+    echo "persistentvolume/pv-mock serverdryrun"
+    echo "persistentvolumeclaim/pvc-mock serverdryrun"
+    echo "pod/pod-mock serverdryrun"
+  else
+    echo "persistentvolume/pv-mock created"
+    echo "persistentvolumeclaim/pvc-mock created"
+    echo "pod/pod-mock created"
+  fi
+  exit 0
+fi
+
+# --- jsonpath 조회 ---
+if [[ "$args" == *"jsonpath"* ]]; then
+  phase="${MOCK_POD_PHASE:-Succeeded}"
+  code="${MOCK_POD_EXIT:-0}"
+  if [[ "$args" == *"status.phase"* && "$args" == *"exitCode"* ]]; then
+    printf '%s | %s\n' "$phase" "$code"; exit 0
+  fi
+  if [[ "$args" == *"status.phase"* ]]; then printf '%s\n' "$phase"; exit 0; fi
+  if [[ "$args" == *"exitCode"* ]];     then printf '%s\n' "$code";  exit 0; fi
+  if [[ "$args" == *"imageID"* ]]; then
+    printf 'asia-northeast3-docker.pkg.dev/mock/mock/zc24@sha256:%064d\n' 1; exit 0
+  fi
+  if [[ "$args" == *"resources"* ]]; then
+    echo '{"limits":{"cpu":"1","ephemeral-storage":"1Gi","memory":"2Gi"},"requests":{"cpu":"1","ephemeral-storage":"1Gi","memory":"2Gi"}}'
+    exit 0
+  fi
+  if [[ "$args" == *"startTime"* ]];         then date -u -d '-40 seconds' +%Y-%m-%dT%H:%M:%SZ; exit 0; fi
+  if [[ "$args" == *"creationTimestamp"* ]]; then date -u -d '-55 seconds' +%Y-%m-%dT%H:%M:%SZ; exit 0; fi
+  echo ""; exit 0
+fi
+
+# --- get -o json (증적 수집용) ---
+if [[ "$args" == *"-o json"* ]]; then
+  cat <<'JSON'
+{"metadata":{"name":"zc24-autopilot-bq-smoke","uid":"mock-uid-0001",
+ "creationTimestamp":"2026-10-22T09:00:00Z"},
+ "status":{"phase":"Succeeded","startTime":"2026-10-22T09:00:15Z",
+  "containerStatuses":[{"imageID":"asia-northeast3-docker.pkg.dev/mock/mock/zc24@sha256:0000000000000000000000000000000000000000000000000000000000000001",
+   "state":{"terminated":{"exitCode":0,"finishedAt":"2026-10-22T09:01:10Z"}}}]}}
+JSON
+  exit 0
+fi
+
+# --- logs ---
+if [[ "$args" == *"logs"* ]]; then
+  cat <<'LOG'
+[INFO] BigQuery 읽기 전용 연결 테스트
+[SUCCESS] BigQuery 연결/쿼리 성공 (읽기 전용, 1행 확인)
+[RESULT] {"ok":true,"job_id":"mock_job_0001","location":"asia-northeast3","bytes_billed":10485760,"sa_email":"mock-sa@example.iam.gserviceaccount.com"}
+LOG
+  exit 0
+fi
+
+# --- exec ---
+if [[ "$args" == *"exec"* ]]; then
+  echo "uid=1000(jupyter) gid=1000(jupyter) groups=1000(jupyter)"
+  echo "10.136.209.130:/batch_gke/l2/zc24 on /home/jupyter type nfs4 (rw,relatime)"
+  echo "NFS_READ_OK"
+  echo "KEY_READ_OK"
+  exit 0
+fi
+
+# --- delete ---
+if [[ "$args" == *"delete"* ]]; then echo 'deleted (mock)'; exit 0; fi
+
+# --- get pv/pvc/pods ---
+if [[ "$args" == *"get"* ]]; then
+  echo "NAME     STATUS   AGE"
+  echo "mock     Bound    1m"
+  exit 0
+fi
+
+echo "mock kubectl: $args"
+exit 0
