@@ -5,30 +5,40 @@
 # 마운트가 성공해도 POSIX uid/gid 불일치로 쓰기만 거부되는 경우가 있으므로
 # 전용 하위 경로에서 쓰기까지 확인합니다. 업무 데이터는 건드리지 않습니다.
 
-TEST_ID=t03
+TEST_ID=t03b
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../lib/common.sh
 source "${REPO_ROOT}/lib/common.sh"
 
+# Filestore 네트워크·방화벽 승인이 아직 없으면 이 테스트는 수행할 수 없습니다.
+# 그동안 t03a(VM 측 NFS)로 확인 가능한 것을 먼저 확보합니다.
+if [ "${SKIP_GKE_NFS:-0}" = "1" ]; then
+  skip "Filestore/GKE NFS 검증 보류 중 (SKIP_GKE_NFS=1). t03a 가 VM 측을 검증합니다."
+fi
+
 need_cmd kubectl jq
+
+# t03a 가 운영 VM 에서 실측한 값이 있으면 그것을 우선 씁니다.
+# PV 의 server/path 를 추측이 아니라 실측으로 채우기 위한 것입니다.
+_nfsenv="${EVIDENCE_DIR}/${RUN_ID}.nfs.env"
+if [ -f "$_nfsenv" ]; then
+  # shellcheck disable=SC1090
+  . "$_nfsenv"
+  : "${NFS_EXPORT_SOURCE:=${SUGGEST_NFS_EXPORT_SOURCE:-}}"
+  : "${NFS_EXPORT_BQKEY:=${SUGGEST_NFS_EXPORT_BQKEY:-}}"
+  info "t03a 실측값 사용: server=${NFS_SERVER} vers=${NFS_VERSION:-?}"
+  evidence_fact source_of_nfs_values "t03a"
+fi
+
 need_var NS KSA NFS_SERVER NFS_EXPORT_SOURCE NFS_EXPORT_BQKEY
 
-# --- 1. VM 측 마운트 상태 (운영 VM 에서 실행할 때만) ------------------------
-if [ -d "${VM_NFS_MOUNT:-/nonexistent}" ]; then
-  info "VM 측 마운트: $VM_NFS_MOUNT"
-  if command -v findmnt >/dev/null 2>&1; then
-    mnt="$(findmnt -T "$VM_NFS_MOUNT" -o SOURCE,FSTYPE,OPTIONS -n 2>/dev/null || echo '')"
-    evidence_fact vm_mount "$mnt"
-    info "  $mnt"
-    # NFS 버전은 방화벽 포트 요구사항을 가릅니다.
-    # v4.1 은 보통 2049 단일 포트, v3 는 111/2046/2049/2050/4045 등이 더 필요합니다.
-    case "$mnt" in
-      *nfs4*) info "  NFSv4 계열 — 보통 TCP 2049 단일 포트" ;;
-      *nfs*)  warn "  NFSv3 가능성 — 방화벽 담당자와 추가 포트를 확인하십시오" ;;
-    esac
-  fi
+# --- 1. 선행 조건: t03a 의 VM 측 검증 --------------------------------------
+# VM 측 마운트 확인은 t03a 가 전담합니다. 여기서는 그 결과가 있는지만 봅니다.
+if [ -f "$_nfsenv" ]; then
+  ok "t03a 선행 완료 (${_nfsenv})"
 else
-  info "VM NFS 마운트 지점이 없습니다. 이 호스트는 운영 VM 이 아닌 것으로 보입니다."
+  warn "t03a 의 실측값이 없습니다. config/env.sh 의 설정값으로 진행합니다."
+  warn "먼저 운영 VM 에서 tests/t03a_vm_nfs.sh 를 실행하시길 권합니다."
 fi
 
 # --- 2. 매니페스트 렌더링 ---------------------------------------------------
@@ -92,6 +102,20 @@ printf '%s\n' "$logs" | sed 's/^/    /' >&2
 # uid 기록 — 마운트 성공 후 쓰기만 거부되는 경우를 가려냅니다.
 uid_line="$(printf '%s\n' "$logs" | grep -m1 '^uid=' || echo '')"
 evidence_fact pod_uid "$uid_line"
+
+# t03a 가 잰 VM 쪽 uid 와 대조합니다. 둘이 다르면 POSIX 권한에 따라
+# 마운트는 되는데 쓰기만 거부되는 상황이 생깁니다.
+pod_uid_num="$(printf '%s' "$uid_line" | sed -n 's/^uid=\([0-9]*\).*/\1/p')"
+if [ -n "${VM_UID:-}" ] && [ -n "$pod_uid_num" ]; then
+  evidence_fact vm_uid "$VM_UID"
+  if [ "$VM_UID" = "$pod_uid_num" ]; then
+    ok "uid 일치: VM=${VM_UID} Pod=${pod_uid_num}"
+  else
+    warn "uid 불일치: VM=${VM_UID} Pod=${pod_uid_num}"
+    warn "기존 배치가 만든 파일을 신규 Pod 가 못 읽거나 못 쓸 수 있습니다."
+    evidence_fact uid_mismatch "vm=${VM_UID} pod=${pod_uid_num}"
+  fi
+fi
 
 for marker in NFS_READ_OK KEY_READ_OK; do
   if printf '%s\n' "$logs" | grep -q "$marker"; then

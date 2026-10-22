@@ -35,11 +35,24 @@ export ZC24_TAG='2.3-zc24-zc24-003-3'
 # 전체 URI. AR_REPO 확정 후 t02 가 자동 조립하거나, 여기에 직접 적습니다.
 export ZC24_IMAGE_URI="${ZC24_IMAGE_URI:-}"
 
-# --- Filestore / NFS -------------------------------------------------------
-export NFS_SERVER='__CONFIRM__'           # 기존 제공 정보: 10.136.209.130
+# --- VM 측 NFS (t03a) ------------------------------------------------------
+# GKE/Filestore 검증 전에 운영 VM 에서 지금 확인할 수 있는 부분입니다.
+# t03a 가 여기서 실측한 값을 evidence/<RUN_ID>.nfs.env 로 떨궈
+# t03b 의 PV 선언 입력으로 넘깁니다.
+export VM_NFS_MOUNT='/mnt/batch_gke'      # 운영 VM 측 마운트 지점
+export VM_KEY_PATH=''                     # 비우면 <VM_NFS_MOUNT>/l2/rsvp/.oefj 를 찾고
+                                          # .oef 후보까지 함께 점검합니다
+
+# --- GKE 측 Filestore / NFS (t03b) -----------------------------------------
+# 네트워크·방화벽 승인 전이라 아직 검증이 불가하면 1 로 두십시오.
+# t03b 가 건너뛰고, t03a 가 VM 측 검증을 계속 수행합니다.
+export SKIP_GKE_NFS='1'
+
+# 아래 세 값은 t03a 실행 후 그 출력에 나온 실측값으로 채우십시오.
+# 계획 기준값(10.136.209.130 등)을 그대로 쓰지 마십시오.
+export NFS_SERVER='__CONFIRM__'           # t03a 가 findmnt 로 실측
 export NFS_EXPORT_SOURCE='__CONFIRM__'    # zc24 업무 소스 export 경로
 export NFS_EXPORT_BQKEY='__CONFIRM__'     # SA Key 가 있는 export 경로
-export VM_NFS_MOUNT='/mnt/batch_gke'      # 운영 VM 측 마운트 지점
 
 # --- BigQuery --------------------------------------------------------------
 export BQ_JOB_PROJECT='__CONFIRM__'       # 계획 기준값: gcp-prod-edp-lake

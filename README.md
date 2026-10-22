@@ -60,11 +60,56 @@ make report-md > 결과보고.md
 |---|---|---|
 | `t01_gke_access.sh` | 4장 ① | 클러스터 접속, Namespace, RBAC(pods/pvc/**pv**) |
 | `t02_ar_pull.sh` | 5장 ② | AR 저장소 확인, 전체 URI 확정, **digest 기록**, 아키텍처 |
-| `t03_nfs_pv.sh` | 6장 ③ | PV/PVC 마운트, 읽기, **쓰기**, **uid 기록** |
+| `t03a_vm_nfs.sh` | 6장 ③ | **운영 VM 측 NFS** — 마운트, export 실측, 키 파일, 읽기·쓰기 |
+| `t03b_gke_nfs_pv.sh` | 6장 ③ | GKE PV/PVC 마운트, 읽기, **쓰기**, **uid 대조** |
 | `t04_bq_readonly.sh` | 7장 ④ | SA Key 인식, SELECT, **실패 유형별 종료코드** |
 | `t05_client_runner.sh` | 8장 ⑤ | 실행기 구문·인자·Kubeconfig 격리, **실패 경로 자원 정리** |
 
 굵게 표시한 항목은 계획서에 없거나 불충분해 보강한 부분입니다.
+
+### 단위테스트 ③을 둘로 나눈 이유
+
+Filestore/GKE 측 검증(`t03b`)은 네트워크·방화벽 승인이 선행되어야 해서 지금
+당장은 수행할 수 없습니다. 그 승인을 기다리는 동안 **운영 VM 에서 이미 돌고 있는
+NFS 로 확인할 수 있는 것**이 상당히 많습니다. 그것을 `t03a` 로 분리했습니다.
+
+```bash
+# 승인 전: VM 측만 수행 (config/env.sh 의 SKIP_GKE_NFS=1 이 기본)
+MODE=dryrun bin/run-all.sh t03a
+
+# 승인 후: SKIP_GKE_NFS=0 으로 바꾸고 GKE 측까지
+MODE=dryrun bin/run-all.sh t03a t03b
+```
+
+`t03a` 가 운영 VM 에서 확인하는 것:
+
+| 항목 | 내용 |
+|---|---|
+| 마운트 실측 | `findmnt` 로 server·export·NFS 버전·옵션. **ext4 등 비 NFS 면 실패 처리** |
+| 방화벽 포트 | NFS 버전에 따라 필요한 포트를 안내 (v4 는 2049, v3 는 추가 포트) |
+| uid/gid | `t03b` 의 Pod uid 와 대조할 기준값 |
+| 업무 디렉터리 | `l2/` 하위를 열거해 **30개 과제 목록과 대조**, 안 보이는 업무를 경고 |
+| SA Key | `.oefj` / `.oef` 후보를 모두 점검, 권한·소유자·SA 이메일 확인 (**내용은 미출력**) |
+| 읽기·쓰기 | `.preflight-<RUN_ID>` 전용 경로에서만 쓰고 즉시 삭제 |
+| 용량 | `df` 와 사용률 경고. PV 의 `100Gi` 는 선언값일 뿐임을 명시 |
+| 서버 도달성 | `nc` 로 2049, `showmount -e` 로 export 목록 |
+
+**산출물이 핵심입니다.** `t03a` 는 실측값을 `evidence/<RUN_ID>.nfs.env` 로 남기고,
+`config/env.sh` 에 붙여 넣을 값을 그대로 출력합니다.
+
+```
+config/env.sh 에 반영할 값:
+  export NFS_SERVER='10.136.209.130'
+  export NFS_EXPORT_SOURCE='/batch_gke/l2/zc24'
+  export NFS_EXPORT_BQKEY='/batch_gke/l2/rsvp'
+```
+
+`t03b` 는 이 파일이 있으면 설정값보다 우선해서 씁니다. PV 의 `server`/`path` 를
+추측이 아니라 실측으로 채우는 것이 목적입니다.
+
+다만 계획서 6장 1항이 경고하듯, **VM 의 마운트 지점 하위 경로가 곧바로 NFS export
+경로가 되는 것은 아닙니다.** `t03a` 는 후보를 제시할 뿐이고, 실제로 그 경로를 직접
+마운트할 수 있는지는 Filestore 담당자 확인이 필요합니다. 테스트도 그렇게 경고합니다.
 
 ### 추가한 테스트 5종
 
@@ -200,7 +245,8 @@ echo 'GP_L2ZC24_003_3' >> /ssw/dlk/autopilot_allow.txt   # Wave 확대 = 한 줄
 | D-5 | `t06`, `t07` | 여기서 막히면 나머지 일정이 전부 밀립니다 |
 | D-5 | `t01` | `pv create` 는 ClusterRole 발급에 승인 시간이 걸립니다 |
 | D-4 | `t02` | IAM 승인 후 |
-| D-3 | `t03` | 네트워크·방화벽 승인 후 |
+| D-5 | `t03a` | **승인 불필요** — 운영 VM 에서 지금 바로 가능 |
+| D-3 | `t03b` | 네트워크·방화벽 승인 후 |
 | D-2 | `t04`, `t09` | `t09` 로 30개 SQL 전수 점검 |
 | D-2 | `t05`, `t10` | 실행기와 원복 절차 |
 | D-1 | `t08` | Wave 3 전 동시 부하 |
@@ -235,7 +281,7 @@ echo 'GP_L2ZC24_003_3' >> /ssw/dlk/autopilot_allow.txt   # Wave 확대 = 한 줄
 │   ├── env.example.sh        모든 가변값 (2장 확정 필요 항목)
 │   └── tasks30.csv           부록 A 30개 과제 + digest 칸
 ├── tests/
-│   ├── t01 ~ t10             단위테스트
+│   ├── t01 ~ t10             단위테스트 (t03a=VM측 NFS, t03b=GKE측)
 │   └── negative.sh           실패 주입
 ├── python/
 │   ├── sample_bq_autopilot.py
@@ -249,7 +295,9 @@ echo 'GP_L2ZC24_003_3' >> /ssw/dlk/autopilot_allow.txt   # Wave 확대 = 한 줄
 
 ## 알려진 제약
 
-- `t02`/`t03`/`t08` 의 실제 Pull·마운트·부하는 `MODE=live` 에서만 수행됩니다
+- `t02`/`t03b`/`t08` 의 실제 Pull·마운트·부하는 `MODE=live` 에서만 수행됩니다
+- `t03b` 는 `SKIP_GKE_NFS=1` 이 기본값입니다. Filestore 네트워크 승인 후 `0` 으로 바꾸십시오
+- `t03a` 는 **운영 VM 에서 실행해야** 의미가 있습니다. 다른 호스트에서는 마운트 지점이 없어 CONFIG 실패합니다
 - `t09` 는 `sql/<과제ID>.sql` 을 사람이 배치해야 합니다
 - Node SA 는 Autopilot 에서 `describe` 로 안 보일 수 있습니다. GKE 운영 담당자 확인 필요
 - 이 하네스는 검증만 합니다. 실제 절체는 계획서 10장 절차를 따르십시오

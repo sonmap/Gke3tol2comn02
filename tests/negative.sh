@@ -71,7 +71,11 @@ expect 6 "Autopilot admission 거절 → ADMISSION" \
   -- MOCK_KUBECTL_FAIL=admission -- tests/t07_autopilot_admission.sh
 
 expect 6 "NFS PV admission 거절 → ADMISSION" \
-  -- MOCK_KUBECTL_FAIL=admission -- tests/t03_nfs_pv.sh
+  -- MOCK_KUBECTL_FAIL=admission SKIP_GKE_NFS=0 -- tests/t03b_gke_nfs_pv.sh
+
+# --- VM NFS: 마운트 지점 부재가 EXIT_CONFIG(2) 로 분류되는가 ----------------
+expect 2 "VM 마운트 지점 없음 → CONFIG" \
+  -- MODE=dryrun VM_NFS_MOUNT=/nonexistent-mount -- tests/t03a_vm_nfs.sh
 
 # --- Python 종료코드가 그대로 전파되는가 ------------------------------------
 echo
